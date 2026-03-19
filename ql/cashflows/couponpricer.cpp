@@ -116,6 +116,7 @@ namespace QuantLib {
 
     void BlackIborCouponPricer::initialize(const FloatingRateCoupon& coupon) {
         IborCouponPricer::initialize(coupon);
+        discount_ = Null<Real>();
     }
 
     Real BlackIborCouponPricer::discount() const {
