@@ -24,6 +24,7 @@
 #ifndef quantlib_svi_interpolation_hpp
 #define quantlib_svi_interpolation_hpp
 
+#include <ql/experimental/volatility/noarbsvi.hpp>
 #include <ql/experimental/volatility/svismilesection.hpp>
 #include <ql/math/interpolations/xabrinterpolation.hpp>
 #include <utility>
@@ -138,10 +139,123 @@ struct SviSpecs {
         return ext::make_shared<type>(t, forward, params);
     }
 };
+
+struct NoArbSVISpecs: SviSpecs {
+
+    void checkNoArb(std::vector<Real> &params) {
+        QL_REQUIRE(std::find(params.begin(), params.end(), Null<Real>()) == params.end(),
+                   "all parameters must be set to check for arbitrage");
+        QL_REQUIRE(params[2] > 0.0, "sigma (" << params[2] << ") must be positive");
+        Real aOverSigma = params[0] / params[2];
+        Real mOverSigma = params[4] / params[2];
+        Real minAOverSigma = svi::minAOverSigma(params[1], params[3]);
+        QL_REQUIRE(aOverSigma > minAOverSigma || std::fabs(params[3]) >= 1.0 && aOverSigma >= 0.0,
+                   "a/sigma (" << aOverSigma << "must be above" << minAOverSigma <<
+                   "to prevent butterfly arb");
+        auto [lower, upper] = svi::mOverSigmaRange(aOverSigma, params[1], params[3]);
+        QL_REQUIRE(mOverSigma > lower && mOverSigma < upper,
+                   "m/sigma (" << mOverSigma << ") must be in (" << lower << ","
+                   << upper << ") to prevent butterfly arb");
+        Real minSigma = svi::minSigma(aOverSigma, params[1], params[3], mOverSigma);
+        QL_REQUIRE(params[2] >= minSigma, "sigma (" << params[2] << ") must be at least" <<
+                   minSigma << "to prevent butterfly arb");
+    }
+    void defaultValues(std::vector<Real> &params,
+                       std::vector<bool> &paramIsFixed,
+                       const Real &forward,
+                       const Real expiryTime,
+                       const std::vector<Real> &addParams) {
+        if  (std::all_of(paramIsFixed.begin(), paramIsFixed.end(), [](bool f) {return f;})) {
+            checkNoArb(params);
+            return;
+        }
+        QL_REQUIRE(!paramIsFixed[0] && !paramIsFixed[2] && !paramIsFixed[4],
+                   "a, sigma, and m cannot be fixed in the no arb svi parameterization");
+        if (paramIsFixed[1])
+            QL_REQUIRE(params[1] > 0.0 && params[1] <= 2.0,
+                       "b (" << params[1] << ") must be (0, 2]");
+        if (paramIsFixed[3])
+            QL_REQUIRE(std::fabs(params[3]) <= 1.0,
+                       "rho (" << params[3] << "must be in [-1, 1]");
+        if (params[3] == Null<Real>())
+            params[3] = -0.4;  // from SviSpecs default
+        if (params[1] == Null<Real>())
+            params[1] = 1.0 / (1.0 + std::fabs(params[3]));
+        SviSpecs::defaultValues(params, paramIsFixed, forward, expiryTime, addParams);
+    }
+    void guess(Array &values, const std::vector<bool> &paramIsFixed,
+               const Real &forward, const Real expiryTime,
+               const std::vector<Real> &r, const std::vector<Real> &addParams) {
+        SviSpecs::guess(values, paramIsFixed, forward, expiryTime, r, addParams);
+        if (!paramIsFixed[1])
+            values[1] /= 2.0;
+    }
+    Real rhoMax(const std::vector<bool> &paramIsFixed, const std::vector<Real> &params) {
+        return paramIsFixed[1] ? std::clamp(2.0 / params[1] - 1.0, 0.0, eps2()) : eps2();
+    }
+    Real boundedB(Real x, Real rho) {
+        return (eps1() + (1.0 -eps1()) * 0.5 * (1.0 + std::sin(x))) * 2.0 / (1.0 + std::fabs(rho)); 
+    }
+    Real boundedMOverSigma(Real x, Real lower, Real upper) {
+        if (std::isinf(upper))
+            return lower + eps1() + x * x;
+        if (std::isinf(lower))
+            return upper - eps1() - x * x;
+        return 0.5 * (upper + lower) + 0.5 * (upper - lower) * eps2() * std::sin(x);
+    }
+    Array inverse(const Array &y, const std::vector<bool> &paramIsFixed,
+                  const std::vector<Real> &params, const Real forward) {
+        Array x(5, 0.0);
+        Real rm = rhoMax(paramIsFixed, params);
+        Real rho = paramIsFixed[3] ? params[3] : std::clamp(y[3], -rm, rm);
+        if (!paramIsFixed[3] && rm > 0.0)
+            x[3] = std::asin(rho / rm);
+        Real b = params[1];
+        if (!paramIsFixed[1]) {
+            Real bFrac = std::clamp(y[1] * (1.0 + std::fabs(rho)) / 2.0, eps1(), 1.0);
+            x[1] = std::asin(std::clamp(2.0 * (bFrac - eps1()) / (1.0 - eps1()) - 1.0, -1.0, 1.0));
+            b = boundedB(x[1], rho);
+        }
+        Real minAOverSigma = svi::minAOverSigma(b, rho);
+        x[0] = std::sqrt(std::max(y[0] / y[2] - minAOverSigma - eps1(), 0.0));
+        Real aOverSigma = minAOverSigma + eps1() + x[0] * x[0];
+        auto [lower, upper] = svi::mOverSigmaRange(aOverSigma, b, rho);
+        Real mOverSigma = y[4] / y[2];
+        if (std::isinf(upper))
+            x[4] = std::sqrt(std::max(mOverSigma - lower - eps1(), 0.0));
+        else if (std::isinf(lower))
+            x[4] = std::sqrt(std::max(upper - eps1() - mOverSigma, 0.0));
+        else
+            x[4] = std::asin(std::clamp((2.0 * mOverSigma - lower - upper) / (
+                (upper - lower) * eps2()), -1.0, 1.0));
+        x[2] = std::sqrt(std::max(y[2] - minSigmaRelMargin() * svi::minSigma(
+            aOverSigma, b, rho, boundedMOverSigma(x[4], lower, upper)), 0.0));
+        return x;
+    }
+    Real minSigmaRelMargin() {return 1.0 + 1.0e-8;}
+    Array direct(const Array &x, const std::vector<bool> &paramIsFixed,
+                 const std::vector<Real> &params, const Real forward) {
+        Real rho = paramIsFixed[3] ? params[3] : std::sin(x[3]) * rhoMax(paramIsFixed, params);
+        Real b = paramIsFixed[1] ? params[1] : boundedB(x[1], rho);
+        Real aOverSigma = svi::minAOverSigma(b, rho) + eps1() + x[0] * x[0];
+        auto [lower, upper] = svi::mOverSigmaRange(aOverSigma, b, rho);
+        Real mOverSigma = boundedMOverSigma(x[4], lower, upper);
+        Real sigma = minSigmaRelMargin() * svi::minSigma(aOverSigma, b, rho, mOverSigma) + x[2] * x[2];
+        return {sigma * aOverSigma, b, sigma, rho, sigma * mOverSigma};
+    }
+};
 }
 
 //! %Svi smile interpolation between discrete volatility points.
 class SviInterpolation : public Interpolation {
+  private:
+    template <class F>
+    decltype(auto) coeffs(const F& f) const {
+        if (arbitrageFree_)
+            return f(dynamic_cast<const detail::XABRCoeffHolder<detail::NoArbSVISpecs>&>(*impl_));
+        return f(dynamic_cast<const detail::XABRCoeffHolder<detail::SviSpecs>&>(*impl_));
+    }
+    bool arbitrageFree_;
   public:
     template <class I1, class I2>
     SviInterpolation(const I1 &xBegin, // x = strikes
@@ -157,33 +271,37 @@ class SviInterpolation : public Interpolation {
                          ext::shared_ptr<OptimizationMethod>(),
                      const Real errorAccept = 0.0020,
                      const bool useMaxError = false,
-                     const Size maxGuesses = 50) {
-
-        impl_ = ext::shared_ptr<Interpolation::Impl>(
-            new detail::XABRInterpolationImpl<I1, I2, detail::SviSpecs>(
-                xBegin, xEnd, yBegin, t, forward,
-                {a, b, sigma, rho, m},
-                {aIsFixed, bIsFixed, sigmaIsFixed, rhoIsFixed, mIsFixed},
-                vegaWeighted, endCriteria, optMethod, errorAccept, useMaxError,
-                maxGuesses));
+                     const Size maxGuesses = 50,
+                     const bool arbitrageFree = false)
+        : arbitrageFree_(arbitrageFree) {
+        auto makeImpl = [&](auto specs) {
+            return ext::shared_ptr<Interpolation::Impl>(
+                new detail::XABRInterpolationImpl<I1, I2, decltype(specs)>(
+                    xBegin, xEnd, yBegin, t, forward,
+                    {a, b, sigma, rho, m},
+                    {aIsFixed, bIsFixed, sigmaIsFixed, rhoIsFixed, mIsFixed},
+                    vegaWeighted, endCriteria, optMethod, errorAccept, useMaxError,
+                    maxGuesses));
+        };
+        impl_ = arbitrageFree_ ? makeImpl(detail::NoArbSVISpecs()) : makeImpl(detail::SviSpecs());
     }
-    Real expiry() const { return coeffs().t_; }
-    Real forward() const { return coeffs().forward_; }
-    Real a() const { return coeffs().params_[0]; }
-    Real b() const { return coeffs().params_[1]; }
-    Real sigma() const { return coeffs().params_[2]; }
-    Real rho() const { return coeffs().params_[3]; }
-    Real m() const { return coeffs().params_[4]; }
-    Real rmsError() const { return coeffs().error_; }
-    Real maxError() const { return coeffs().maxError_; }
+    const std::vector<Real>& params() const {
+        return coeffs([](const auto& c) -> const std::vector<Real>& {return c.params_;});
+    }
+    Real expiry() const { return coeffs([](const auto& c) {return c.t_;}); }
+    Real forward() const { return coeffs([](const auto& c) {return c.forward_;}); }
+    Real a() const { return params()[0]; }
+    Real b() const { return params()[1]; }
+    Real sigma() const { return params()[2]; }
+    Real rho() const { return params()[3]; }
+    Real m() const { return params()[4]; }
+    Real rmsError() const { return coeffs([](const auto& c) {return c.error_;}); }
+    Real maxError() const { return coeffs([](const auto& c) {return c.maxError_;}); }
     const std::vector<Real> &interpolationWeights() const {
-        return coeffs().weights_;
+        return coeffs([](const auto& c) -> const std::vector<Real>& {return c.weights_;});
     }
-    EndCriteria::Type endCriteria() { return coeffs().XABREndCriteria_; }
-
-  private:
-    const detail::XABRCoeffHolder<detail::SviSpecs>& coeffs() const {
-        return *dynamic_cast<detail::XABRCoeffHolder<detail::SviSpecs>*>(impl_.get());
+    EndCriteria::Type endCriteria() {
+        return coeffs([](const auto& c) { return c.XABREndCriteria_; });
     }
 };
 
@@ -207,12 +325,13 @@ class Svi {
         ext::shared_ptr<OptimizationMethod> optMethod = ext::shared_ptr<OptimizationMethod>(),
         const Real errorAccept = 0.0020,
         const bool useMaxError = false,
-        const Size maxGuesses = 50)
+        const Size maxGuesses = 50,
+        const bool arbitrageFree = false)
     : t_(t), forward_(forward), a_(a), b_(b), sigma_(sigma), rho_(rho), m_(m), aIsFixed_(aIsFixed),
       bIsFixed_(bIsFixed), sigmaIsFixed_(sigmaIsFixed), rhoIsFixed_(rhoIsFixed),
       mIsFixed_(mIsFixed), vegaWeighted_(vegaWeighted), endCriteria_(std::move(endCriteria)),
       optMethod_(std::move(optMethod)), errorAccept_(errorAccept), useMaxError_(useMaxError),
-      maxGuesses_(maxGuesses) {}
+      maxGuesses_(maxGuesses), arbitrageFree_(arbitrageFree) {}
     template <class I1, class I2>
     Interpolation interpolate(const I1 &xBegin, const I1 &xEnd,
                               const I2 &yBegin) const {
@@ -220,7 +339,8 @@ class Svi {
                                  sigma_, rho_, m_, aIsFixed_, bIsFixed_,
                                  sigmaIsFixed_, rhoIsFixed_, mIsFixed_,
                                  vegaWeighted_, endCriteria_, optMethod_,
-                                 errorAccept_, useMaxError_, maxGuesses_);
+                                 errorAccept_, useMaxError_, maxGuesses_,
+                                 arbitrageFree_);
     }
     static const bool global = true;
 
@@ -235,6 +355,7 @@ class Svi {
     const Real errorAccept_;
     const bool useMaxError_;
     const Size maxGuesses_;
+    const bool arbitrageFree_;
 };
 }
 

@@ -206,6 +206,7 @@ set(QL_SOURCES
     experimental/volatility/noarbsabrabsprobs.cpp
     experimental/volatility/noarbsabrinterpolatedsmilesection.cpp
     experimental/volatility/noarbsabrsmilesection.cpp
+    experimental/volatility/noarbsvi.cpp
     experimental/volatility/sabrvolsurface.cpp
     experimental/volatility/sviinterpolatedsmilesection.cpp
     experimental/volatility/svismilesection.cpp
@@ -1263,6 +1264,7 @@ set(QL_HEADERS
     experimental/volatility/noarbsabrinterpolation.hpp
     experimental/volatility/noarbsabrsmilesection.hpp
     experimental/volatility/noarbsabrswaptionvolatilitycube.hpp
+    experimental/volatility/noarbsvi.hpp
     experimental/volatility/sabrvolsurface.hpp
     experimental/volatility/sabrvoltermstructure.hpp
     experimental/volatility/sviinterpolatedsmilesection.hpp

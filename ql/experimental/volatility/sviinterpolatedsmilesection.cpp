@@ -44,14 +44,15 @@ namespace QuantLib {
         bool vegaWeighted,
         ext::shared_ptr<EndCriteria> endCriteria,
         ext::shared_ptr<OptimizationMethod> method,
-        const DayCounter& dc)
+        const DayCounter& dc,
+        bool arbitrageFree)
     : SmileSection(optionDate, dc), forward_(std::move(forward)),
       atmVolatility_(std::move(atmVolatility)), volHandles_(volHandles), strikes_(strikes),
       actualStrikes_(strikes), hasFloatingStrikes_(hasFloatingStrikes), vols_(volHandles.size()),
       a_(a), b_(b), sigma_(sigma), rho_(rho), m_(m), isAFixed_(isAFixed), isBFixed_(isBFixed),
       isSigmaFixed_(isSigmaFixed), isRhoFixed_(isRhoFixed), isMFixed_(isMFixed),
       vegaWeighted_(vegaWeighted), endCriteria_(std::move(endCriteria)),
-      method_(std::move(method)) {
+      method_(std::move(method)), arbitrageFree_(arbitrageFree) {
 
         LazyObject::registerWith(forward_);
         LazyObject::registerWith(atmVolatility_);
@@ -79,7 +80,8 @@ namespace QuantLib {
         bool vegaWeighted,
         ext::shared_ptr<EndCriteria> endCriteria,
         ext::shared_ptr<OptimizationMethod> method,
-        const DayCounter& dc)
+        const DayCounter& dc,
+        bool arbitrageFree)
     : SmileSection(optionDate, dc),
       forward_(Handle<Quote>(ext::shared_ptr<Quote>(new SimpleQuote(forward)))),
       atmVolatility_(Handle<Quote>(ext::shared_ptr<Quote>(new SimpleQuote(atmVolatility)))),
@@ -88,7 +90,7 @@ namespace QuantLib {
       sigma_(sigma), rho_(rho), m_(m), isAFixed_(isAFixed), isBFixed_(isBFixed),
       isSigmaFixed_(isSigmaFixed), isRhoFixed_(isRhoFixed), isMFixed_(isMFixed),
       vegaWeighted_(vegaWeighted), endCriteria_(std::move(endCriteria)),
-      method_(std::move(method)) {
+      method_(std::move(method)), arbitrageFree_(arbitrageFree) {
 
         for (Size i = 0; i < volHandles_.size(); ++i)
             volHandles_[i] = Handle<Quote>(ext::shared_ptr<Quote>(new SimpleQuote(volHandles[i])));

@@ -81,6 +81,14 @@ template <typename Model> class XABRCoeffHolder {
         modelInstance_ = Model().instance(t_, forward_, params_, addParams_);
     }
 
+    void setParameters(const Array& params) {
+        if (std::equal(params.begin(), params.end(), params_.begin())) {
+            return;  // skip if the optimizer already set the exact parameters
+        }
+        std::copy(params.begin(), params.end(), params_.begin());
+        updateModelInstance();
+    }
+
     /*! Expiry, Forward */
     Real t_;
     const Real &forward_;
@@ -215,6 +223,7 @@ class XABRInterpolationImpl final : public Interpolation::templateImpl<I1, I2>,
 
                 Array result = Model().direct(transfResult, this->paramIsFixed_,
                                               this->params_, this->forward_);
+                this->setParameters(result);
                 tmpInterpolationError = useMaxError_ ? interpolationMaxError()
                                                      : interpolationError();
 
@@ -227,9 +236,7 @@ class XABRInterpolationImpl final : public Interpolation::templateImpl<I1, I2>,
             } while (++iterations < maxGuesses_ &&
                      tmpInterpolationError > errorAccept_);
 
-            for (Size i = 0; i < bestParameters.size(); ++i)
-                this->params_[i] = bestParameters[i];
-
+            this->setParameters(bestParameters);
             this->error_ = interpolationError();
             this->maxError_ = interpolationMaxError();
         }
@@ -290,20 +297,14 @@ class XABRInterpolationImpl final : public Interpolation::templateImpl<I1, I2>,
         explicit XABRError(XABRInterpolationImpl *xabr) : xabr_(xabr) {}
 
         Real value(const Array& x) const override {
-            const Array y = Model().direct(x, xabr_->paramIsFixed_,
-                                           xabr_->params_, xabr_->forward_);
-            for (Size i = 0; i < xabr_->params_.size(); ++i)
-                xabr_->params_[i] = y[i];
-            xabr_->updateModelInstance();
+            xabr_->setParameters(Model().direct(
+                x, xabr_->paramIsFixed_, xabr_->params_, xabr_->forward_));
             return xabr_->interpolationSquaredError();
         }
 
         Array values(const Array& x) const override {
-            const Array y = Model().direct(x, xabr_->paramIsFixed_,
-                                           xabr_->params_, xabr_->forward_);
-            for (Size i = 0; i < xabr_->params_.size(); ++i)
-                xabr_->params_[i] = y[i];
-            xabr_->updateModelInstance();
+            xabr_->setParameters(Model().direct(
+                x, xabr_->paramIsFixed_, xabr_->params_, xabr_->forward_));
             return xabr_->interpolationErrors();
         }
 
