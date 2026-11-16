@@ -410,6 +410,44 @@ BOOST_AUTO_TEST_CASE(testConsistency) {
 
 }
 
+BOOST_AUTO_TEST_CASE(testDayMonthYear) {
+
+    BOOST_TEST_MESSAGE("Testing day, month, year and month ends against Boost.Date_Time...");
+
+    const auto minDate = Date::minDate();
+    const auto last = Date::maxDate().serialNumber();
+    auto ref = boost::gregorian::date(minDate.year(), minDate.month(), minDate.dayOfMonth());
+
+    for (auto serial = minDate.serialNumber(); serial <= last;
+         ++serial, ref += boost::gregorian::days(1)) {
+        const auto date = Date(serial);
+        const auto [day, month, year] = date.dayMonthYear();
+        const auto d = Day(ref.day());
+        const auto m = Month(ref.month().as_number());
+        const auto y = Year(ref.year());
+
+        BOOST_TEST_CONTEXT("serial number " << serial << ", ref " << ref) {
+            BOOST_REQUIRE_EQUAL(day, d);
+            BOOST_REQUIRE_EQUAL(Integer(month), Integer(m));
+            BOOST_REQUIRE_EQUAL(year, y);
+            BOOST_REQUIRE_EQUAL(date.dayOfMonth(), d);
+            BOOST_REQUIRE_EQUAL(Integer(date.month()), Integer(m));
+            BOOST_REQUIRE_EQUAL(date.year(), y);
+            BOOST_REQUIRE_EQUAL(Date(d, m, y).serialNumber(), serial);
+            BOOST_REQUIRE_EQUAL(date.dayOfYear(), Day(ref.day_of_year()));
+            // Boost labels Sunday as 0 while QuantLib labels it 1
+            BOOST_REQUIRE_EQUAL(Integer(date.weekday()),
+                                Integer(ref.day_of_week().as_number()) + 1);
+
+            BOOST_REQUIRE_EQUAL(Date::startOfMonth(date), Date(1, m, y));
+            BOOST_REQUIRE_EQUAL(Date::isStartOfMonth(date), d == 1);
+            const auto eomRef = ref.end_of_month();
+            BOOST_REQUIRE_EQUAL(Date::endOfMonth(date), Date(Day(eomRef.day()), m, y));
+            BOOST_REQUIRE_EQUAL(Date::isEndOfMonth(date), ref == eomRef);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(isoDates) {
     BOOST_TEST_MESSAGE("Testing ISO dates...");
     std::string input_date("2006-01-15");
@@ -594,6 +632,19 @@ BOOST_AUTO_TEST_CASE(nullDate) {
 
     BOOST_CHECK_NO_THROW(null_date.serialNumber());
     BOOST_CHECK_NO_THROW(hasher(null_date));
+
+#ifndef QL_HIGH_RESOLUTION_DATE
+    const ExpectedErrorMessage nullDateError("null date");
+    BOOST_CHECK_EXCEPTION(null_date.dayMonthYear(), Error, nullDateError);
+    BOOST_CHECK_EXCEPTION(null_date.dayOfMonth(), Error, nullDateError);
+    BOOST_CHECK_EXCEPTION(null_date.month(), Error, nullDateError);
+    BOOST_CHECK_EXCEPTION(null_date.year(), Error, nullDateError);
+    BOOST_CHECK_EXCEPTION(null_date.dayOfYear(), Error, nullDateError);
+    BOOST_CHECK_EXCEPTION(Date::startOfMonth(null_date), Error, nullDateError);
+    BOOST_CHECK_EXCEPTION(Date::isStartOfMonth(null_date), Error, nullDateError);
+    BOOST_CHECK_EXCEPTION(Date::endOfMonth(null_date), Error, nullDateError);
+    BOOST_CHECK_EXCEPTION(Date::isEndOfMonth(null_date), Error, nullDateError);
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(todaysDate) {

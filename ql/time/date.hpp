@@ -31,6 +31,7 @@
 #ifndef quantlib_date_hpp
 #define quantlib_date_hpp
 
+#include <ql/errors.hpp>
 #include <ql/time/period.hpp>
 #include <ql/time/weekday.hpp>
 #include <ql/utilities/null.hpp>
@@ -85,6 +86,14 @@ namespace QuantLib {
     //! Year number
     /*! \ingroup datetime */
     typedef Integer Year;
+
+    //! Day of the month, month and year of a date
+    /*! \ingroup datetime */
+    struct DayMonthYear {
+        Day day;
+        Month month;
+        Year year;
+    };
 
 #ifdef QL_HIGH_RESOLUTION_DATE
     //! Hour number
@@ -153,6 +162,8 @@ namespace QuantLib {
         Day dayOfYear() const;
         Month month() const;
         Year year() const;
+        //! Day of the month, month and year, computed together
+        DayMonthYear dayMonthYear() const;
         Date::serial_type serialNumber() const;
 
 #ifdef QL_HIGH_RESOLUTION_DATE
@@ -247,10 +258,6 @@ namespace QuantLib {
         //@}
 
       private:
-        static Date::serial_type minimumSerialNumber();
-        static Date::serial_type maximumSerialNumber();
-        static void checkSerialNumber(Date::serial_type serialNumber);
-
 #ifdef QL_HIGH_RESOLUTION_DATE
         static const boost::gregorian::date& serialNumberDateReference() noexcept {
             // Boost 1.74 fixed constexpr construction of dates.
@@ -270,6 +277,12 @@ namespace QuantLib {
         static Integer monthLength(Month m, bool leapYear);
         static Integer monthOffset(Month m, bool leapYear);
         static Date::serial_type yearOffset(Year y);
+        static const Integer MonthLength[12];
+        static const Integer MonthLeapLength[12];
+        static const Date::serial_type YearOffset[301];
+        static Integer lengthOfMonth(Month m, bool leapYear);
+        static Date::serial_type offsetOfYear(Year y);
+        static Year yearOf(Date::serial_type serialNumber);
 #endif
     };
 
@@ -322,6 +335,41 @@ namespace QuantLib {
     std::ostream& operator<<(std::ostream&, const Date&);
 
     namespace detail {
+
+        // serial numbers of Date::minDate() and Date::maxDate()
+        inline constexpr Date::serial_type minimumSerialNumber = 367;      // Jan 1st, 1901
+        inline constexpr Date::serial_type maximumSerialNumber = 109574;   // Dec 31st, 2199
+
+        // Neri and Schneider's algorithm
+        // "Euclidean affine functions and their application to calendar algorithms"
+        inline DayMonthYear dayMonthYearOf(Date::serial_type serialNumber) {
+            QL_REQUIRE(serialNumber != 0, "null date");
+            constexpr std::uint32_t s = 82;
+            constexpr std::uint32_t K = 719468 + 146097 * s;
+            constexpr std::uint32_t L = 400 * s;
+            // serial number 25569 is January 1st, 1970
+            const std::uint32_t N = std::uint32_t(serialNumber - 25569) + K;
+            const std::uint32_t N_1 = 4 * N + 3;
+            const std::uint32_t C = N_1 / 146097;
+            const std::uint32_t N_C = N_1 % 146097 / 4;
+            const std::uint32_t N_2 = 4 * N_C + 3;
+            const std::uint64_t P_2 = std::uint64_t(2939745) * N_2;
+            const std::uint32_t Z = std::uint32_t(P_2 / 4294967296);
+            const std::uint32_t N_Y = std::uint32_t(P_2 % 4294967296) / 2939745 / 4;
+            const std::uint32_t Y = 100 * C + Z;
+            const std::uint32_t N_3 = 2141 * N_Y + 197913;
+            const std::uint32_t M = N_3 / 65536;
+            const std::uint32_t D = N_3 % 65536 / 2141;
+            const std::uint32_t J = N_Y >= 306;
+            return {Day(D + 1), Month(J ? M - 12 : M), Year(Y - L + J)};
+        }
+
+        inline bool isLeapYear(Year y) {
+            // 1900 is leap in agreement with Excel's bug
+            // 1900 is out of valid date range anyway
+            // given y % 100 == 0, y % 400 == 0 is equivalent to y % 16 == 0;
+            return y % 4 == 0 && (y % 100 != 0 || y % 16 == 0 || y == 1900);
+        }
 
         struct short_date_holder {
             explicit short_date_holder(const Date d) : d(d) {}
@@ -388,12 +436,6 @@ namespace QuantLib {
 
     // inline definitions
 
-    inline Date Date::startOfMonth(const Date& d) {
-        Month m = d.month();
-        Year y = d.year();
-        return Date(1, m, y);
-    }
-
     inline bool Date::isStartOfMonth(const Date& d) {
        return (d.dayOfMonth() == 1);
     }
@@ -407,12 +449,43 @@ namespace QuantLib {
         return Weekday(w == 0 ? 7 : w);
     }
 
+    inline Integer Date::lengthOfMonth(Month m, bool leapYear) {
+        return (leapYear? MonthLeapLength[m-1] : MonthLength[m-1]);
+    }
+
+    inline Date::serial_type Date::offsetOfYear(Year y) {
+        return YearOffset[y-1900];
+    }
+
+    inline Year Date::yearOf(Date::serial_type serialNumber) {
+        // 1461 / 4 is 365.25
+        Year y = std::uint32_t(serialNumber) * 4 / 1461 + 1900;
+        // yearOffset(y) is December 31st of the preceding year
+        if (serialNumber <= offsetOfYear(y))
+            --y;
+        return y;
+    }
+
+    inline DayMonthYear Date::dayMonthYear() const {
+        return detail::dayMonthYearOf(serialNumber_);
+    }
+
     inline Day Date::dayOfMonth() const {
-        return dayOfYear() - monthOffset(month(),isLeap(year()));
+        return dayMonthYear().day;
+    }
+
+    inline Month Date::month() const {
+        return dayMonthYear().month;
+    }
+
+    inline Year Date::year() const {
+        QL_REQUIRE(serialNumber_ != 0, "null date");
+        return yearOf(serialNumber_);
     }
 
     inline Day Date::dayOfYear() const {
-        return serialNumber_ - yearOffset(year());
+        QL_REQUIRE(serialNumber_ != 0, "null date");
+        return serialNumber_ - offsetOfYear(yearOf(serialNumber_));
     }
 
     inline Date::serial_type Date::serialNumber() const {
@@ -435,14 +508,25 @@ namespace QuantLib {
         return advance(*this,-p.length(),p.units());
     }
 
+    inline Date Date::startOfMonth(const Date& d) {
+        // the start of a valid date's month is always a valid date, so no check is needed
+        Date result;
+        result.serialNumber_ = d.serialNumber_ - d.dayOfMonth() + 1;
+        return result;
+    }
+
     inline Date Date::endOfMonth(const Date& d) {
-        Month m = d.month();
-        Year y = d.year();
-        return {monthLength(m, isLeap(y)), m, y};
+        const auto [day, m, y] = d.dayMonthYear();
+        const Integer length = lengthOfMonth(m, detail::isLeapYear(y));
+        // the end of a valid date's month is always a valid date, so no check is needed
+        Date result;
+        result.serialNumber_ = d.serialNumber_ + length - day;
+        return result;
     }
 
     inline bool Date::isEndOfMonth(const Date& d) {
-       return (d.dayOfMonth() == monthLength(d.month(), isLeap(d.year())));
+        const auto [day, m, y] = d.dayMonthYear();
+        return day == lengthOfMonth(m, detail::isLeapYear(y));
     }
 
     inline Date::serial_type operator-(const Date& d1, const Date& d2) {
@@ -479,6 +563,12 @@ namespace QuantLib {
 #else
     inline Date::Date() noexcept
     : dateTime_(serialNumberDateReference()) {}
+
+    inline Date Date::startOfMonth(const Date& d) {
+        Month m = d.month();
+        Year y = d.year();
+        return Date(1, m, y);
+    }
 #endif
 }
 
